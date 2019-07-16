@@ -1,7 +1,7 @@
 const { GuildPlayer, Song, SongSearchResult, SongSource, Playlist } = require('./structures')
 const {
   Songs: {
-    HTTPSong, SoundcloudSong, TwitchSong, YoutubeSong, YoutubePlaylist
+    HTTPSong, MixerSong, SoundcloudSong, TwitchSong, YoutubeSong, YoutubePlaylist
   },
   Sources
 } = require('./sources')
@@ -9,7 +9,7 @@ const {
 const MusicUtils = require('./MusicUtils.js')
 
 const { PlayerManager } = require('discord.js-lavalink')
-const snekfetch = require('snekfetch')
+const fetch = require('node-fetch')
 
 const DEFAULT_JOIN_OPTIONS = { selfdeaf: true }
 
@@ -46,19 +46,19 @@ module.exports = class SwitchbladePlayerManager extends PlayerManager {
   async fetchTracks (identifier) {
     const specialSource = Object.values(Sources).find(source => source.test(identifier))
     if (specialSource) return specialSource
+    const params = new URLSearchParams({ identifier })
 
-    const res = await snekfetch.get(`http://${this.REST_ADDRESS}/loadtracks`)
-      .query({ identifier })
-      .set('Authorization', this.REST_PASSWORD)
-      .catch(e => {
-        this.client.logError(new Error(`Lavalink fetchTracks ${e}`))
-      })
+    const res = await fetch(`http://${this.REST_ADDRESS}/loadtracks?${params.toString()}`, {
+      headers: { Authorization: this.REST_PASSWORD }
+    }).then(res => res.json()).catch(err => {
+      this.client.logError(new Error(`Lavalink fetchTracks ${err}`))
+    })
 
-    const { body } = res
-    if (!body || ['LOAD_FAILED', 'NO_MATCHES'].includes(body.loadType) || !body.tracks.length) return
+    if (!res) return false
+    if (['LOAD_FAILED', 'NO_MATCHES'].includes(res.loadType) || !res.tracks.length) return res.loadType !== 'LOAD_FAILED'
 
-    const songs = body.tracks
-    songs.searchResult = body.loadType === 'SEARCH_RESULT'
+    const songs = res.tracks
+    songs.searchResult = res.loadType === 'SEARCH_RESULT'
     return songs
   }
 
@@ -83,8 +83,10 @@ module.exports = class SwitchbladePlayerManager extends PlayerManager {
             return searchResult.setResult(new TwitchSong(song, requestedBy, this.client.apis.twitch).loadInfo())
           case 'soundcloud':
             return searchResult.setResult(new SoundcloudSong(song, requestedBy, this.client.apis.soundcloud).loadInfo())
+          case 'mixer':
+            return searchResult.setResult(new MixerSong(song, requestedBy, this.client.apis.mixer).loadInfo())
           default:
-            return searchResult.setResult(new Song(songs[0], requestedBy).loadInfo())
+            return searchResult.setResult(new Song(song, requestedBy).loadInfo())
         }
       } else {
         const pInfo = MusicUtils.getPlaylistInfo(identifier)
@@ -96,7 +98,8 @@ module.exports = class SwitchbladePlayerManager extends PlayerManager {
         }
       }
     }
-    return new SongSearchResult(true)
+
+    return new SongSearchResult(typeof songs === 'boolean' ? songs : true)
   }
 
   async play (song, channel) {
